@@ -111,6 +111,11 @@ final class TypeTypeSubscriptionProvider: SubscriptionProvider {
         cachePopulated ? cachedChannels.count : nil
     }
 
+    /// The subscribed channels known without a network fetch.
+    var cachedSubscriptions: [Channel]? {
+        cachePopulated ? cachedChannels : nil
+    }
+
     // MARK: - Helpers
 
     /// The instance and bearer token this account's calls run with.
