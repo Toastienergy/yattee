@@ -211,6 +211,13 @@ actor TypeTypeAPI: InstanceAPI {
 
     // MARK: - InstanceAPI
 
+    /// TypeType exposes one discovery feed (its home page) and no separate
+    /// popular endpoint — answering both tabs from it showed the same list
+    /// twice. Popular stays empty rather than duplicating Trending.
+    func popular(instance: Instance) async throws -> [Video] {
+        []
+    }
+
     func trending(instance: Instance) async throws -> [Video] {
         // TypeType's home page — the recommender's rows when it is installed
         // and enabled, the plain home page otherwise, never an error from the
@@ -234,25 +241,26 @@ actor TypeTypeAPI: InstanceAPI {
     }
 
     func search(query: String, instance: Instance, page: Int, filters: SearchFilters) async throws -> SearchResult {
-        var params = [
-            "q": query,
-            "service": String(TypeTypeService.youtube)
-        ]
-        if page > 1 {
-            guard let token = searchNextPages["\(query)|\(page)"] else {
-                // The token for this page was never seen — either the search
-                // started elsewhere or the chain is exhausted.
-                return SearchResult.empty
-            }
-            params["nextpage"] = token
+        // TypeType's content filters are PipePipe-style composite values
+        // ("|2|channels"), verified against a live instance — plain words are
+        // rejected as "Unknown content filter". The default filter is
+        // "|0|all", which already carries videos, channels and playlists, so
+        // Yattee's "All" chip sends nothing and the other chips map onto the
+        // matching server filter.
+        let contentFilter: String?
+        switch filters.type {
+        case .all: contentFilter = nil
+        case .video: contentFilter = "|1|videos"
+        case .channel: contentFilter = "|2|channels"
+        case .playlist: contentFilter = "|3|playlists"
         }
 
-        let endpoint = GenericEndpoint.get("/api/search", query: params)
-        let response: TypeTypeSearchResponse = try await fetchAuthed(endpoint, instance: instance)
-
-        if let nextpage = response.nextpage {
-            searchNextPages["\(query)|\(page + 1)"] = nextpage
-        }
+        let response = try await searchPage(
+            query,
+            contentFilter: contentFilter,
+            page: page,
+            instance: instance
+        )
 
         let videos = response.items.map { $0.toVideo() }
         let channels = (response.channels ?? []).map { $0.toChannel() }
@@ -273,6 +281,45 @@ actor TypeTypeAPI: InstanceAPI {
             orderedItems: orderedItems,
             nextPage: response.nextpage != nil ? page + 1 : nil
         )
+    }
+
+    /// One search request with cursor bookkeeping. TypeType paginates with
+    /// opaque tokens while Yattee's interface pages by number — the token for
+    /// page N+1 is stashed when page N comes back, keyed by query, content
+    /// kind and page so the kinds never share a cursor chain.
+    private func searchPage(
+        _ query: String,
+        contentFilter: String?,
+        page: Int,
+        instance: Instance
+    ) async throws -> TypeTypeSearchResponse {
+        let kind = contentFilter ?? "default"
+        var params = [
+            "q": query,
+            "service": String(TypeTypeService.youtube)
+        ]
+        if let contentFilter {
+            params["contentFilter"] = contentFilter
+        }
+        if page > 1 {
+            guard let token = searchNextPages["\(query)|\(kind)|\(page)"] else {
+                return TypeTypeSearchResponse(
+                    items: [],
+                    nextpage: nil,
+                    searchSuggestion: nil,
+                    isCorrectedSearch: nil,
+                    playlists: nil,
+                    channels: nil
+                )
+            }
+            params["nextpage"] = token
+        }
+        let endpoint = GenericEndpoint.get("/api/search", query: params)
+        let response: TypeTypeSearchResponse = try await fetchAuthed(endpoint, instance: instance)
+        if let nextpage = response.nextpage {
+            searchNextPages["\(query)|\(kind)|\(page + 1)"] = nextpage
+        }
+        return response
     }
 
     func searchSuggestions(query: String, instance: Instance) async throws -> [String] {
@@ -388,7 +435,27 @@ actor TypeTypeAPI: InstanceAPI {
 
     func streams(videoID: String, instance: Instance) async throws -> [Stream] {
         let response = try await streamResponse(videoID: videoID, instance: instance)
-        return response.toStreams(instanceURL: instance.url, videoID: videoID, httpHeaders: await authHeaders(for: instance))
+        let streams = response.toStreams(
+            instanceURL: instance.url,
+            videoID: videoID,
+            httpHeaders: await authHeaders(for: instance)
+        )
+        prewarmAudioManifest(in: streams, instance: instance)
+        return streams
+    }
+
+    /// The audio-only manifest answers 422 until its SABR session is warmed,
+    /// and the player's first open races that warmup — it would spin forever.
+    /// One throwaway fetch at stream-resolution time creates and warms the
+    /// session, so the player's open lands on a ready one.
+    private func prewarmAudioManifest(in streams: [Stream], instance: Instance) {
+        guard let audio = streams.first(where: { $0.isAudioOnly }),
+              let components = URLComponents(url: audio.url, resolvingAgainstBaseURL: false) else { return }
+        let endpoint = GenericEndpoint(path: components.path, queryItems: components.queryItems)
+        let headers = audio.httpHeaders
+        Task { [httpClient] in
+            _ = try? await httpClient.fetchData(endpoint, baseURL: instance.url, customHeaders: headers)
+        }
     }
 
     /// Video details, streams, and captions from a single fetch — the stream
@@ -398,9 +465,15 @@ actor TypeTypeAPI: InstanceAPI {
         instance: Instance
     ) async throws -> (video: Video, streams: [Stream], captions: [Caption], storyboards: [Storyboard]) {
         let response = try await streamResponse(videoID: id, instance: instance)
+        let streams = response.toStreams(
+            instanceURL: instance.url,
+            videoID: id,
+            httpHeaders: await authHeaders(for: instance)
+        )
+        prewarmAudioManifest(in: streams, instance: instance)
         return (
             response.toVideo(instanceURL: instance.url, videoID: id),
-            response.toStreams(instanceURL: instance.url, videoID: id, httpHeaders: await authHeaders(for: instance)),
+            streams,
             (response.subtitles ?? []).compactMap { $0.toCaption() },
             []
         )
@@ -443,10 +516,21 @@ private enum TypeTypeURLs {
     }
 
     static func channel(_ id: String) -> String {
-        if id.hasPrefix("http://") || id.hasPrefix("https://") {
-            return id
+        guard id.hasPrefix("http://") || id.hasPrefix("https://") else {
+            return "https://www.youtube.com/channel/\(id)"
         }
-        return "https://www.youtube.com/channel/\(id)"
+        // Channel URLs that carry a content-tab suffix (/videos, /streams, ...)
+        // extract only that tab's first page — which is why channels opened
+        // from subscriptions (whose stored URL has the suffix) showed few or
+        // no videos while the same channel opened from a video worked fine.
+        // The base URL extracts the full channel.
+        var base = id
+        for suffix in ["/livestreams", "/shorts", "/streams", "/videos", "/playlists", "/community", "/featured", "/about", "/live"] {
+            if let range = base.range(of: "\(suffix)([?#].*)?$", options: .regularExpression) {
+                base = String(base[..<range.lowerBound])
+            }
+        }
+        return base
     }
 
     static func playlist(_ id: String) -> String {
@@ -482,7 +566,24 @@ private enum TypeTypeSentinel {
 }
 
 private func typetypeStripHTML(_ html: String) -> String {
-    html.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+    // Comment text arrives with inline markup — channel mentions are
+    // `<a href="...">@Name</a>` — and escaped entities. Keep the visible text.
+    var text = html.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+    let entities: [(String, String)] = [
+        ("&nbsp;", " "),
+        ("&quot;", "\""),
+        ("&#39;", "'"),
+        ("&apos;", "'"),
+        ("&lt;", "<"),
+        ("&gt;", ">"),
+        ("&amp;", "&")
+    ]
+    for (entity, replacement) in entities {
+        text = text.replacingOccurrences(of: entity, with: replacement)
+    }
+    return text
+        .replacingOccurrences(of: "  +", with: " ", options: .regularExpression)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
 }
 
 // MARK: - Response Models
@@ -890,7 +991,7 @@ struct TypeTypeCommentItem: Decodable, Sendable {
                 name: author ?? "",
                 thumbnailURL: authorAvatarUrl.flatMap { URL(string: $0) }
             ),
-            content: text ?? "",
+            content: typetypeStripHTML(text ?? ""),
             publishedAt: TypeTypeSentinel.date(publishedAt),
             publishedText: publishedTime,
             likeCount: TypeTypeSentinel.count(likeCount),

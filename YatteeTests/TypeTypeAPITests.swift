@@ -337,6 +337,40 @@ struct TypeTypeListMappingTests {
         #expect(channel.isVerified)
     }
 
+    @Test("Comment markup and entities collapse to plain text")
+    func commentHTMLIsCleaned() throws {
+        let response = try decode(TypeTypeCommentsResponse.self, from: """
+        {
+            "comments": [
+                {
+                    "id": "c1",
+                    "text": "<a href=\"https://www.youtube.com/channel/UC123\">&nbsp;@SomeUser&nbsp;</a>; das ist hart",
+                    "author": "Someone",
+                    "authorUrl": "https://www.youtube.com/channel/UCy",
+                    "authorAvatarUrl": "https://tt.example.com/a.jpg",
+                    "likeCount": 0,
+                    "textualLikeCount": "0",
+                    "publishedTime": "1 day ago",
+                    "publishedAt": null,
+                    "isHeartedByUploader": false,
+                    "isPinned": false,
+                    "uploaderVerified": false,
+                    "replyCount": 0,
+                    "repliesPage": null
+                }
+            ],
+            "nextpage": null,
+            "commentsDisabled": false
+        }
+        """)
+
+        let comment = try #require(response.comments.first?.toComment())
+        #expect(comment.content.contains("<a") == false)
+        #expect(comment.content.contains("&nbsp;") == false)
+        #expect(comment.content.contains("@SomeUser"))
+        #expect(comment.content.contains("das ist hart"))
+    }
+
     @Test("Comments map to Yattee's model")
     func commentsMap() throws {
         let response = try decode(TypeTypeCommentsResponse.self, from: """
