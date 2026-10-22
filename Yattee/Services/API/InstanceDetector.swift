@@ -288,11 +288,11 @@ actor InstanceDetector {
         }
     }
 
-    /// Checks if the instance is TypeType by probing its `/instance` metadata.
+    /// Checks if the instance is TypeType by probing its `/api/instance` metadata.
     /// The response shape (apiVersion + supportedServices) is unique to TypeType.
     /// Re-throws `APIError.unauthorized` so the caller can prompt for basic-auth credentials.
     private func isTypeType(url: URL, extraHeaders: [String: String]? = nil) async throws -> Bool {
-        let endpoint = GenericEndpoint.get("/instance")
+        let endpoint = GenericEndpoint.get("/api/instance")
 
         do {
             let response: InstanceDetectorModels.TypeTypeInstanceInfo = try await httpClient.fetch(endpoint, baseURL: url, customHeaders: extraHeaders)
