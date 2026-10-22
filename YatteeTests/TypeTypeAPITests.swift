@@ -35,7 +35,7 @@ struct TypeTypeStreamMappingTests {
         #expect(streams.count == 3)
 
         let best = try #require(streams.first)
-        #expect(best.url.path == "/sabr/manifest/dQw4w9WgXcQ")
+        #expect(best.url.path == "/api/sabr/manifest/dQw4w9WgXcQ")
         #expect(best.url.host == "tt.example.com")
         #expect(best.format == "hls")
         #expect(!best.isAudioOnly)

@@ -7,11 +7,15 @@
 //
 //  TypeType plays YouTube VOD through its own SABR session machinery, but the
 //  server also transmuxes that session into standard HLS: one GET on
-//  `/sabr/manifest/{videoId}?format=hls` answers with a regular HLS master
+//  `/api/sabr/manifest/{videoId}?format=hls` answers with a regular HLS master
 //  playlist whose segments the server serves itself. That is the whole
 //  playback integration — no SABR client, no MSE, just an HLS URL for the
 //  platform player. Quality selection asks the same manifest endpoint for a
 //  specific `videoItag`, and `audioOnly=true` gives the audio-only variant.
+//
+//  Note the `/api` prefix on every route: a bundled TypeType deployment serves
+//  its API under `/api` and the web frontend at the root, so a bare root path
+//  would fetch the SPA's HTML instead of JSON.
 //
 
 @preconcurrency import Foundation
@@ -41,7 +45,7 @@ actor TypeTypeAPI: InstanceAPI {
         // policy; without it there is no anonymous trending at all, and Home
         // is better empty than an error banner.
         do {
-            let endpoint = GenericEndpoint.get("/recommendations/home", query: [
+            let endpoint = GenericEndpoint.get("/api/recommendations/home", query: [
                 "service": String(TypeTypeService.youtube),
                 "limit": "30"
             ])
@@ -70,7 +74,7 @@ actor TypeTypeAPI: InstanceAPI {
             params["nextpage"] = token
         }
 
-        let endpoint = GenericEndpoint.get("/search", query: params)
+        let endpoint = GenericEndpoint.get("/api/search", query: params)
         let response: TypeTypeSearchResponse = try await httpClient.fetch(endpoint, baseURL: instance.url)
 
         if let nextpage = response.nextpage {
@@ -99,7 +103,7 @@ actor TypeTypeAPI: InstanceAPI {
     }
 
     func searchSuggestions(query: String, instance: Instance) async throws -> [String] {
-        let endpoint = GenericEndpoint.get("/suggestions", query: [
+        let endpoint = GenericEndpoint.get("/api/suggestions", query: [
             "query": query,
             "service": String(TypeTypeService.youtube)
         ])
@@ -113,7 +117,7 @@ actor TypeTypeAPI: InstanceAPI {
     }
 
     func channel(id: String, instance: Instance) async throws -> Channel {
-        let endpoint = GenericEndpoint.get("/channel", query: ["url": TypeTypeURLs.channel(id)])
+        let endpoint = GenericEndpoint.get("/api/channel", query: ["url": TypeTypeURLs.channel(id)])
         let response: TypeTypeChannelResponse = try await httpClient.fetch(endpoint, baseURL: instance.url)
         return response.toChannel(id: id)
     }
@@ -123,7 +127,7 @@ actor TypeTypeAPI: InstanceAPI {
         if let continuation {
             params["nextpage"] = continuation
         }
-        let endpoint = GenericEndpoint.get("/channel", query: params)
+        let endpoint = GenericEndpoint.get("/api/channel", query: params)
         let response: TypeTypeChannelResponse = try await httpClient.fetch(endpoint, baseURL: instance.url)
         return ChannelVideosPage(
             videos: response.videos.map { $0.toVideo() },
@@ -136,7 +140,7 @@ actor TypeTypeAPI: InstanceAPI {
         if let continuation {
             params["nextpage"] = continuation
         }
-        let endpoint = GenericEndpoint.get("/channel/playlists", query: params)
+        let endpoint = GenericEndpoint.get("/api/channel/playlists", query: params)
         let response: TypeTypeChannelPlaylistsResponse = try await httpClient.fetch(endpoint, baseURL: instance.url)
         return ChannelPlaylistsPage(
             playlists: response.playlists.map { $0.toPlaylist() },
@@ -146,7 +150,7 @@ actor TypeTypeAPI: InstanceAPI {
 
     func playlist(id: String, instance: Instance) async throws -> Playlist {
         var params = ["url": TypeTypeURLs.playlist(id)]
-        let endpoint = GenericEndpoint.get("/playlist", query: params)
+        let endpoint = GenericEndpoint.get("/api/playlist", query: params)
         let firstResponse: TypeTypePlaylistResponse = try await httpClient.fetch(endpoint, baseURL: instance.url)
 
         var allVideos = firstResponse.videos
@@ -156,7 +160,7 @@ actor TypeTypeAPI: InstanceAPI {
 
         while let token = nextpage, page < maxPages {
             params["nextpage"] = token
-            let nextEndpoint = GenericEndpoint.get("/playlist", query: params)
+            let nextEndpoint = GenericEndpoint.get("/api/playlist", query: params)
             let nextResponse: TypeTypePlaylistResponse = try await httpClient.fetch(nextEndpoint, baseURL: instance.url)
             if nextResponse.videos.isEmpty { break }
             allVideos.append(contentsOf: nextResponse.videos)
@@ -180,7 +184,7 @@ actor TypeTypeAPI: InstanceAPI {
         if let continuation {
             params["nextpage"] = continuation
         }
-        let endpoint = GenericEndpoint.get("/comments", query: params)
+        let endpoint = GenericEndpoint.get("/api/comments", query: params)
         let response: TypeTypeCommentsResponse = try await httpClient.fetch(endpoint, baseURL: instance.url)
 
         if response.commentsDisabled == true {
@@ -194,7 +198,7 @@ actor TypeTypeAPI: InstanceAPI {
     }
 
     func captions(videoID: String, instance: Instance) async throws -> [Caption] {
-        let endpoint = GenericEndpoint.get("/subtitles/youtube/\(videoID)")
+        let endpoint = GenericEndpoint.get("/api/subtitles/youtube/\(videoID)")
         let response: [TypeTypeSubtitleItem] = try await httpClient.fetch(endpoint, baseURL: instance.url)
         return response.compactMap { $0.toCaption() }
     }
@@ -203,7 +207,7 @@ actor TypeTypeAPI: InstanceAPI {
 
     /// Resolves the stream metadata for a video in one request.
     func streamResponse(videoID: String, instance: Instance) async throws -> TypeTypeStreamResponse {
-        let endpoint = GenericEndpoint.get("/streams/youtube/sabr", query: [
+        let endpoint = GenericEndpoint.get("/api/streams/youtube/sabr", query: [
             "url": TypeTypeURLs.watch(videoID)
         ])
         return try await httpClient.fetch(endpoint, baseURL: instance.url)
@@ -448,7 +452,7 @@ struct TypeTypeStreamResponse: Decodable, Sendable {
         query: [String: String]
     ) -> URL? {
         guard var components = URLComponents(
-            url: instanceURL.appendingPathComponent("/sabr/manifest/\(videoID)"),
+            url: instanceURL.appendingPathComponent("/api/sabr/manifest/\(videoID)"),
             resolvingAgainstBaseURL: false
         ) else { return nil }
         components.queryItems = query
