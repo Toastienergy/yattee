@@ -439,7 +439,7 @@ private enum TypeTypeURLs {
     }
 
     static func watch(_ videoID: String) -> String {
-        "https://www.youtube.com/watch?v=\(videoID(from: videoID))"
+        "https://www.youtube.com/watch?v=\(TypeTypeURLs.videoID(from: videoID))"
     }
 
     static func channel(_ id: String) -> String {
