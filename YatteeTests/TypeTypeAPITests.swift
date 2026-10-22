@@ -66,6 +66,25 @@ struct TypeTypeStreamMappingTests {
         #expect(stream.format == "hls")
     }
 
+    @Test("A URL where an ID belongs still builds a clean manifest path")
+    func manifestNormalizesURLVideoIDs() throws {
+        let response = try decode(TypeTypeStreamResponse.self, from: Self.vodJSON)
+        let streams = response.toStreams(
+            instanceURL: typeTypeBaseURL,
+            videoID: "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+        )
+
+        let best = try #require(streams.first)
+        #expect(best.url.path == "/api/sabr/manifest/dQw4w9WgXcQ")
+        #expect(best.url.absoluteString.contains("watch") == false)
+
+        let video = response.toVideo(
+            instanceURL: typeTypeBaseURL,
+            videoID: "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+        )
+        #expect(video.id.videoID == "dQw4w9WgXcQ")
+    }
+
     @Test("Stream metadata carries into the video model")
     func streamResponseMapsToVideo() throws {
         let response = try decode(TypeTypeStreamResponse.self, from: Self.vodJSON)
@@ -199,7 +218,7 @@ struct TypeTypeListMappingTests {
     func sentinelsAreDropped() throws {
         let item = try decode(TypeTypeVideoItem.self, from: """
         {
-            "id": "abc12345678",
+            "id": "https://www.youtube.com/watch?v=abc12345678",
             "title": "Sentinels",
             "url": "https://www.youtube.com/watch?v=abc12345678",
             "thumbnailUrl": "https://i.ytimg.com/vi/abc12345678/hqdefault.jpg",
@@ -219,6 +238,7 @@ struct TypeTypeListMappingTests {
         """)
 
         let video = item.toVideo()
+        #expect(video.id.videoID == "abc12345678")
         #expect(video.viewCount == nil)
         #expect(video.publishedAt == nil)
         #expect(video.isShort == false)
@@ -228,7 +248,7 @@ struct TypeTypeListMappingTests {
     func realValuesSurvive() throws {
         let item = try decode(TypeTypeVideoItem.self, from: """
         {
-            "id": "real1234567",
+            "id": "https://www.youtube.com/watch?v=real1234567",
             "title": "Real",
             "url": "https://www.youtube.com/watch?v=real1234567",
             "thumbnailUrl": "https://i.ytimg.com/vi/real1234567/hqdefault.jpg",
@@ -248,6 +268,7 @@ struct TypeTypeListMappingTests {
         """)
 
         let video = item.toVideo()
+        #expect(video.id.videoID == "real1234567")
         #expect(video.viewCount == 4200)
         #expect(video.publishedAt == Date(timeIntervalSince1970: 1_609_459_200))
         #expect(video.isShort == true)
@@ -260,7 +281,7 @@ struct TypeTypeListMappingTests {
         {
             "items": [
                 {
-                    "id": "vid12345678",
+                    "id": "https://www.youtube.com/watch?v=vid12345678",
                     "title": "A Video",
                     "url": "https://www.youtube.com/watch?v=vid12345678",
                     "thumbnailUrl": "https://i.ytimg.com/vi/vid12345678/hqdefault.jpg",
@@ -306,7 +327,7 @@ struct TypeTypeListMappingTests {
         }
         """)
 
-        #expect(response.items.map(\.id) == ["vid12345678"])
+        #expect(response.items.map { $0.toVideo().id.videoID } == ["vid12345678"])
         #expect(response.nextpage == "CAoQAA")
         #expect(response.playlists?.map(\.id) == ["PLtest123"])
         #expect(response.channels?.map(\.id) == ["UCx"])

@@ -420,8 +420,26 @@ private enum TypeTypeService {
 /// for channels, where the ID *is* the URL TypeType handed out (channel URLs
 /// are not derivable from a display name or handle alone).
 private enum TypeTypeURLs {
+    /// The bare YouTube video ID from whatever the caller has: a clean ID or
+    /// the full watch URL. TypeType's `id` fields carry the URL (`id = url` in
+    /// its item mapping), so without this every downstream URL — the SABR
+    /// manifest above all — gets a URL where an ID belongs.
+    static func videoID(from raw: String) -> String {
+        guard raw.hasPrefix("http://") || raw.hasPrefix("https://") else { return raw }
+        guard let components = URLComponents(string: raw) else { return raw }
+        if let v = components.queryItems?.first(where: { $0.name == "v" })?.value, !v.isEmpty {
+            return v
+        }
+        // youtu.be/<id>, /shorts/<id>, /embed/<id>, /live/<id>
+        let segments = components.path.split(separator: "/").map(String.init)
+        if let last = segments.last, !last.isEmpty, last != "watch" {
+            return last
+        }
+        return raw
+    }
+
     static func watch(_ videoID: String) -> String {
-        "https://www.youtube.com/watch?v=\(videoID)"
+        "https://www.youtube.com/watch?v=\(videoID(from: videoID))"
     }
 
     static func channel(_ id: String) -> String {
@@ -503,7 +521,7 @@ struct TypeTypeStreamResponse: Decodable, Sendable {
         let thumbnails = Thumbnail.fallbackChain(for: thumbnailUrl.flatMap { URL(string: $0, relativeTo: instanceURL)?.absoluteURL })
 
         return Video(
-            id: .global(videoID),
+            id: .global(TypeTypeURLs.videoID(from: videoID)),
             title: title,
             description: description.map { typetypeStripHTML($0) },
             author: Author(
@@ -629,7 +647,7 @@ struct TypeTypeStreamResponse: Decodable, Sendable {
         query: [String: String]
     ) -> URL? {
         guard var components = URLComponents(
-            url: instanceURL.appendingPathComponent("/api/sabr/manifest/\(videoID)"),
+            url: instanceURL.appendingPathComponent("/api/sabr/manifest/\(TypeTypeURLs.videoID(from: videoID))"),
             resolvingAgainstBaseURL: false
         ) else { return nil }
         components.queryItems = query
@@ -727,7 +745,7 @@ struct TypeTypeVideoItem: Decodable, Sendable {
 
     nonisolated func toVideo() -> Video {
         Video(
-            id: .global(id),
+            id: .global(TypeTypeURLs.videoID(from: id)),
             title: title,
             description: shortDescription,
             author: Author(
