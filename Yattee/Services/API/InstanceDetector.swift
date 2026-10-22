@@ -100,6 +100,16 @@ actor InstanceDetector {
         }
 
         do {
+            if try await isTypeType(url: url, extraHeaders: extraHeaders) {
+                return .success(InstanceDetectionResult(type: .typetype))
+            }
+        } catch APIError.unauthorized {
+            sawUnauthorized = true
+        } catch {
+            // Continue to next detection method
+        }
+
+        do {
             if try await isPeerTube(url: url, extraHeaders: extraHeaders) {
                 return .success(InstanceDetectionResult(type: .peertube))
             }
@@ -277,6 +287,22 @@ actor InstanceDetector {
             return false
         }
     }
+
+    /// Checks if the instance is TypeType by probing its `/instance` metadata.
+    /// The response shape (apiVersion + supportedServices) is unique to TypeType.
+    /// Re-throws `APIError.unauthorized` so the caller can prompt for basic-auth credentials.
+    private func isTypeType(url: URL, extraHeaders: [String: String]? = nil) async throws -> Bool {
+        let endpoint = GenericEndpoint.get("/instance")
+
+        do {
+            let response: InstanceDetectorModels.TypeTypeInstanceInfo = try await httpClient.fetch(endpoint, baseURL: url, customHeaders: extraHeaders)
+            return response.apiVersion != nil && response.supportedServices != nil
+        } catch APIError.unauthorized {
+            throw APIError.unauthorized
+        } catch {
+            return false
+        }
+    }
 }
 
 // MARK: - Detection Response Models
@@ -338,6 +364,13 @@ enum InstanceDetectorModels {
         let statusPageUrl: String?
         let s3Enabled: Bool?
     }
+
+    struct TypeTypeInstanceInfo: Sendable {
+        let name: String?
+        let apiVersion: Int?
+        let guestAllowed: Bool?
+        let supportedServices: [Int]?
+    }
 }
 
 // MARK: - Decodable Conformance (nonisolated)
@@ -386,6 +419,9 @@ extension InstanceDetectorModels.YatteeServerFullInfo.Dependencies: Decodable {
 // Config and Site use automatic Decodable synthesis since HTTPClient uses .convertFromSnakeCase
 extension InstanceDetectorModels.YatteeServerFullInfo.Config: Decodable {}
 extension InstanceDetectorModels.YatteeServerFullInfo.Site: Decodable {}
+
+// TypeType's `/instance` metadata decodes the same way.
+extension InstanceDetectorModels.TypeTypeInstanceInfo: Decodable {}
 
 extension InstanceDetectorModels.PeerTubeConfig: Decodable {
     private enum CodingKeys: String, CodingKey {

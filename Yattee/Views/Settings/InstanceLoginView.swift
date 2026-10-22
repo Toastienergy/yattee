@@ -210,6 +210,8 @@ struct InstanceLoginView: View {
             return String(localized: "login.username")
         case .invidious:
             return String(localized: "login.username")
+        case .typetype:
+            return String(localized: "login.username")
         case .yatteeServer:
             return String(localized: "login.username")
         case .peertube:
@@ -224,6 +226,10 @@ struct InstanceLoginView: View {
             return String(localized: "login.footer.pipedAccount \(instance.displayName)")
         case .invidious:
             return String(localized: "login.footer.invidiousAccount \(instance.displayName)")
+        case .typetype:
+            // No account concept in this client yet, so no sign-in is offered —
+            // and if one ever were, an empty footer explains nothing.
+            return ""
         case .yatteeServer:
             return String(localized: "login.footer.yatteeServerAccount \(instance.displayName)")
         case .peertube:

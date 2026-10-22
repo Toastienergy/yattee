@@ -21,6 +21,7 @@ actor ContentService: ContentServiceProtocol {
     private let defaultInvidiousAPI: InvidiousAPI
     private let defaultPipedAPI: PipedAPI
     private let defaultPeerTubeAPI: PeerTubeAPI
+    private let defaultTypeTypeAPI: TypeTypeAPI
     private let defaultYatteeServerAPI: YatteeServerAPI
 
     /// Credentials manager for fetching basic auth headers on demand.
@@ -33,6 +34,7 @@ actor ContentService: ContentServiceProtocol {
         self.defaultInvidiousAPI = InvidiousAPI(httpClient: httpClient)
         self.defaultPipedAPI = PipedAPI(httpClient: httpClient)
         self.defaultPeerTubeAPI = PeerTubeAPI(httpClient: httpClient)
+        self.defaultTypeTypeAPI = TypeTypeAPI(httpClient: httpClient)
         self.defaultYatteeServerAPI = YatteeServerAPI(httpClient: httpClient)
         self.basicAuthCredentialsManager = basicAuthCredentialsManager
     }
@@ -60,9 +62,23 @@ actor ContentService: ContentServiceProtocol {
             return await pipedAPI(for: instance)
         case .peertube:
             return await peerTubeAPI(for: instance)
+        case .typetype:
+            return await typetypeAPI(for: instance)
         case .yatteeServer:
             return await yatteeServerAPI(for: instance)
         }
+    }
+
+    /// Returns a TypeTypeAPI configured for the instance's SSL and auth requirements.
+    private func typetypeAPI(for instance: Instance) async -> TypeTypeAPI {
+        if let authClient = await httpClientWithBasicAuth(for: instance) {
+            return TypeTypeAPI(httpClient: authClient)
+        }
+        if !instance.allowInvalidCertificates {
+            return defaultTypeTypeAPI
+        }
+        let insecureClient = httpClientFactory.createClient(for: instance)
+        return TypeTypeAPI(httpClient: insecureClient)
     }
 
     /// Returns a YatteeServerAPI configured for the instance's SSL and auth requirements.
@@ -604,6 +620,11 @@ actor ContentService: ContentServiceProtocol {
             let streams = try await streamsTask
             let captions = try await captionsTask
             return (video, streams, captions, [])
+
+        case .typetype:
+            // TypeType answers details, streams, and captions in one payload.
+            return try await typetypeAPI(for: instance)
+                .videoWithStreamsAndCaptionsAndStoryboards(id: id, instance: instance)
 
         case .peertube:
             // PeerTube fallback - make separate calls (no storyboard support)

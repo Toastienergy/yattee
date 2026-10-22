@@ -5873,6 +5873,17 @@
         }
       }
     },
+    "instances.type.typetype" : {
+      "comment" : "Instance type: TypeType",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "TypeType"
+          }
+        }
+      }
+    },
     "instances.type.yatteeServer" : {
       "comment" : "Instance type: Yattee Server",
       "localizations" : {

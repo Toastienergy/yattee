@@ -296,13 +296,14 @@ final class SidebarManager {
         // Add instances
         for instance in instances {
             let item = SidebarItem.from(instance: instance)
-            // Type order: group by instance type (invidious=0, piped=1, peertube=2, yatteeServer=3)
+            // Type order: group by instance type (invidious=0, piped=1, peertube=2, typetype=3, yatteeServer=4)
             let typeOrder: Int
             switch instance.type {
             case .invidious: typeOrder = 0
             case .piped: typeOrder = 1
             case .peertube: typeOrder = 2
-            case .yatteeServer: typeOrder = 3
+            case .typetype: typeOrder = 3
+            case .yatteeServer: typeOrder = 4
             }
             entries.append(SourceEntry(item: item, name: instance.displayName, date: instance.dateAdded, typeOrder: typeOrder))
         }

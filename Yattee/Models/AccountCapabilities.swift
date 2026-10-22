@@ -90,6 +90,13 @@ extension InstanceType {
             // anonymously.
             .none
 
+        case .typetype:
+            // TypeType has its own accounts (local login, OIDC), but this
+            // client talks to it anonymously so far. This row is where its
+            // subscriptions and saved playlists land when someone wires up
+            // its account API.
+            .none
+
         case .yatteeServer:
             // Stateless today: the client posts its own subscription list and
             // gets a merged feed back, with HTTP Basic as the only auth. Per-user

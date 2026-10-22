@@ -12,6 +12,7 @@ enum InstanceType: String, Codable, CaseIterable, Sendable {
     case invidious
     case piped
     case peertube
+    case typetype
     case yatteeServer
 
     var displayName: String {
@@ -19,6 +20,7 @@ enum InstanceType: String, Codable, CaseIterable, Sendable {
         case .invidious: return String(localized: "instances.type.invidious")
         case .piped: return String(localized: "instances.type.piped")
         case .peertube: return String(localized: "instances.type.peertube")
+        case .typetype: return String(localized: "instances.type.typetype")
         case .yatteeServer: return String(localized: "instances.type.yatteeServer")
         }
     }
@@ -29,7 +31,7 @@ enum InstanceType: String, Codable, CaseIterable, Sendable {
 
     var contentSource: ContentSource {
         switch self {
-        case .invidious, .piped, .yatteeServer:
+        case .invidious, .piped, .typetype, .yatteeServer:
             return .global(provider: ContentSource.youtubeProvider)
         case .peertube:
             // For PeerTube, this should be called with the specific instance URL
@@ -39,7 +41,7 @@ enum InstanceType: String, Codable, CaseIterable, Sendable {
 
     func contentSource(for url: URL) -> ContentSource {
         switch self {
-        case .invidious, .piped, .yatteeServer:
+        case .invidious, .piped, .typetype, .yatteeServer:
             return .global(provider: ContentSource.youtubeProvider)
         case .peertube:
             return .federated(provider: ContentSource.peertubeProvider, instance: url)
@@ -182,6 +184,7 @@ struct Instance: Identifiable, Codable, Hashable, Sendable {
         switch type {
         case .invidious: return frontendURL ?? url
         case .piped: return frontendURL
+        case .typetype: return frontendURL ?? url
         case .peertube, .yatteeServer: return nil
         }
     }
@@ -192,7 +195,7 @@ struct Instance: Identifiable, Codable, Hashable, Sendable {
 
     /// Whether this instance provides YouTube content.
     var isYouTubeInstance: Bool {
-        type == .invidious || type == .piped || type == .yatteeServer
+        type == .invidious || type == .piped || type == .typetype || type == .yatteeServer
     }
 
     /// Whether this instance is a PeerTube instance.
@@ -231,7 +234,7 @@ extension Instance {
 
     /// Whether this instance supports search suggestions/autocomplete.
     var supportsSuggestions: Bool {
-        type == .invidious || type == .piped || type == .yatteeServer
+        type == .invidious || type == .piped || type == .typetype || type == .yatteeServer
     }
 
     /// Whether this instance supports the popular videos endpoint.
