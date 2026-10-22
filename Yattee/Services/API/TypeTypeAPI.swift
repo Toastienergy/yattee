@@ -58,7 +58,12 @@ actor TypeTypeAPI: InstanceAPI {
         instance: Instance,
         token: String? = nil
     ) async throws -> T {
-        let headers = token.map { ["Authorization": "Bearer \($0)"] } ?? await authHeaders(for: instance)
+        let headers: [String: String]?
+        if let token {
+            headers = ["Authorization": "Bearer \(token)"]
+        } else {
+            headers = await authHeaders(for: instance)
+        }
         do {
             return try await httpClient.fetch(endpoint, baseURL: instance.url, customHeaders: headers)
         } catch APIError.unauthorized {
@@ -184,7 +189,12 @@ actor TypeTypeAPI: InstanceAPI {
         instance: Instance,
         token: String? = nil
     ) async throws -> Data {
-        let headers = token.map { ["Authorization": "Bearer \($0)"] } ?? await authHeaders(for: instance)
+        let headers: [String: String]?
+        if let token {
+            headers = ["Authorization": "Bearer \(token)"]
+        } else {
+            headers = await authHeaders(for: instance)
+        }
         do {
             return try await httpClient.fetchData(endpoint, baseURL: instance.url, customHeaders: headers)
         } catch APIError.unauthorized {
