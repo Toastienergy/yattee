@@ -46,6 +46,7 @@ final class AppEnvironment {
     let handoffManager: HandoffManager
     let invidiousCredentialsManager: InvidiousCredentialsManager
     let pipedCredentialsManager: PipedCredentialsManager
+    let typeTypeCredentialsManager: TypeTypeCredentialsManager
     let basicAuthCredentialsManager: BasicAuthCredentialsManager
     /// Shared by both account credential managers so a single CloudKit lookup
     /// resolves the scope for all of them.
@@ -174,12 +175,28 @@ final class AppEnvironment {
         instances.setSettingsManager(settings)
         self.instancesManager = instances
 
+        // The credential identity namespace must exist before the managers
+        // that key items by it are built (see the longer note below).
+        let identityScope = CredentialIdentityScope()
+        self.credentialIdentityScope = identityScope
+
         // Initialize Basic Auth Credentials Manager early (needed for ContentService)
         let basicAuthCreds = BasicAuthCredentialsManager()
         basicAuthCreds.settingsManager = settings
         self.basicAuthCredentialsManager = basicAuthCreds
 
-        let contentSvc = ContentService(httpClient: client, basicAuthCredentialsManager: basicAuthCreds)
+        // TypeType tokens authenticate every request — its API answers
+        // anonymous calls with 401 — so its manager is needed where the
+        // ContentService is built, before the other credential managers below.
+        let typetypeCreds = TypeTypeCredentialsManager(identityScope: identityScope)
+        typetypeCreds.settingsManager = settings
+        self.typeTypeCredentialsManager = typetypeCreds
+
+        let contentSvc = ContentService(
+            httpClient: client,
+            basicAuthCredentialsManager: basicAuthCreds,
+            typeTypeCredentialsManager: typetypeCreds
+        )
         self.contentService = contentSvc
         self.instanceDetector = InstanceDetector(httpClient: client)
         self.navigationCoordinator = navigationCoordinator ?? NavigationCoordinator()
@@ -200,13 +217,6 @@ final class AppEnvironment {
             }
         }
         self.dataManager = dm
-
-        // Resolve which Apple account owns this device's credentials before the
-        // managers that key items by it are built. Cached scopes restore
-        // synchronously here; a first-ever resolution needs the network and is
-        // kicked off below.
-        let identityScope = CredentialIdentityScope()
-        self.credentialIdentityScope = identityScope
 
         // Initialize Invidious Credentials Manager (needed for SubscriptionService)
         let invidiousCreds = InvidiousCredentialsManager(identityScope: identityScope)
@@ -230,7 +240,7 @@ final class AppEnvironment {
         self.localNamespaceImporter = LocalNamespaceImporter(
             accountsManager: accounts,
             identityScope: identityScope,
-            credentialStores: { [weak accounts, weak invidiousCreds, weak pipedCreds] account in
+            credentialStores: { [weak accounts, weak invidiousCreds, weak pipedCreds, weak typetypeCreds] account in
                 // Same resolution as `accountCredentialsManager(for:)`, except
                 // that an instance which has not synced yet is not an answer:
                 // the scoped key is the account ID either way, so both stores
@@ -240,12 +250,14 @@ final class AppEnvironment {
                 guard let type = accounts?.instance(for: account)?.type else {
                     if let invidiousCreds { stores.append(invidiousCreds) }
                     if let pipedCreds { stores.append(pipedCreds) }
+                    if let typetypeCreds { stores.append(typetypeCreds) }
                     return stores
                 }
 
                 switch type {
                 case .invidious: if let invidiousCreds { stores.append(invidiousCreds) }
                 case .piped: if let pipedCreds { stores.append(pipedCreds) }
+                case .typetype: if let typetypeCreds { stores.append(typetypeCreds) }
                 // The slot a future account-keyed store lands in, exactly as in
                 // `accountCredentialsManager(for:)`.
                 default: break
@@ -261,16 +273,20 @@ final class AppEnvironment {
         // Initialize Piped API (used by SubscriptionService and SubscriptionFeedCache)
         let pipedAPI = PipedAPI(httpClient: client)
 
+        // Initialize TypeType API (used by the credential probe and SubscriptionService)
+        let typetypeAPI = TypeTypeAPI(httpClient: client, credentialsManager: typetypeCreds)
+
         // A 401 or 403 from an ordinary request is never allowed to reject a
         // login on its own — it is re-asked here against an endpoint that
         // exists to be authenticated, and only that answer marks the account.
         let probeService = CredentialProbeService(
             accountsManager: accounts,
-            credentialReader: { [weak accounts, weak invidiousCreds, weak pipedCreds] account in
+            credentialReader: { [weak accounts, weak invidiousCreds, weak pipedCreds, weak typetypeCreds] account in
                 guard let type = accounts?.instance(for: account)?.type else { return nil }
                 switch type {
                 case .invidious: return invidiousCreds?.credential(for: account)
                 case .piped: return pipedCreds?.credential(for: account)
+                case .typetype: return typetypeCreds?.credential(for: account)
                 default: return nil
                 }
             },
@@ -283,6 +299,8 @@ final class AppEnvironment {
                         _ = try await invidiousAPI.subscriptions(instance: instance, sid: credential)
                     case .piped:
                         _ = try await pipedAPI.subscriptions(instance: instance, authToken: credential)
+                    case .typetype:
+                        _ = try await typetypeAPI.subscriptions(instance: instance, credential: credential)
                     default:
                         return .indeterminate
                     }
@@ -305,11 +323,12 @@ final class AppEnvironment {
         // backend it belongs to — so neither can read a login the other cannot.
         let accountSvc = AccountService(
             accountsManager: accounts,
-            credentialReader: { [weak accounts, weak invidiousCreds, weak pipedCreds] account in
+            credentialReader: { [weak accounts, weak invidiousCreds, weak pipedCreds, weak typetypeCreds] account in
                 guard let type = accounts?.instance(for: account)?.type else { return nil }
                 switch type {
                 case .invidious: return invidiousCreds?.credential(for: account)
                 case .piped: return pipedCreds?.credential(for: account)
+                case .typetype: return typetypeCreds?.credential(for: account)
                 default: return nil
                 }
             },
@@ -325,8 +344,10 @@ final class AppEnvironment {
             providerFactory: DefaultSubscriptionProviderFactory(
                 invidiousAPI: invidiousAPI,
                 pipedAPI: pipedAPI,
+                typeTypeAPI: typetypeAPI,
                 invidiousCredentialsManager: invidiousCreds,
                 pipedCredentialsManager: pipedCreds,
+                typeTypeCredentialsManager: typetypeCreds,
                 settingsManager: settings
             )
         )
@@ -1064,6 +1085,7 @@ final class AppEnvironment {
         switch instance.type {
         case .invidious: return invidiousCredentialsManager
         case .piped: return pipedCredentialsManager
+        case .typetype: return typeTypeCredentialsManager
         // The slot a future account-keyed store lands in. What a backend's
         // accounts can do is `InstanceType.accountCapabilities`; which store
         // holds their secrets is this switch, and the two move together.
@@ -1339,6 +1361,8 @@ final class AppEnvironment {
             return invidiousCredentialsManager
         case .piped:
             return pipedCredentialsManager
+        case .typetype:
+            return typeTypeCredentialsManager
         case .yatteeServer:
             return basicAuthCredentialsManager
         default:

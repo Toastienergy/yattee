@@ -1635,6 +1635,18 @@ struct InstanceBrowseView: View {
                     // Piped doesn't support pagination for feed
                     hasMore = false
 
+                case .typetype:
+                    // Load subscriptions and feed in parallel; TypeType feeds
+                    // paginate by cursor, mapped onto feedPage internally.
+                    async let subscriptionsTask = contentService.subscriptions(for: instance, credential: credential)
+                    async let feedTask = contentService.feed(for: instance, credential: credential, page: feedPage)
+
+                    let (typeTypeSubscriptions, feedResponse) = try await (subscriptionsTask, feedTask)
+
+                    subscriptionChannels = typeTypeSubscriptions
+                    videos = feedResponse.videos
+                    hasMore = feedResponse.hasMore
+
                 default:
                     errorMessage = String(localized: "feed.error.notSupported")
                     isLoading = false

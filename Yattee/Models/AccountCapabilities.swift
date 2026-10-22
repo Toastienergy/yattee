@@ -91,11 +91,18 @@ extension InstanceType {
             .none
 
         case .typetype:
-            // TypeType has its own accounts (local login, OIDC), but this
-            // client talks to it anonymously so far. This row is where its
-            // subscriptions and saved playlists land when someone wires up
-            // its account API.
-            .none
+            // Signed-in accounts own subscriptions, a feed, and a library of
+            // saved public playlists. TypeType has no owned playlists (nothing
+            // to create, rename or edit), no watch-history endpoint this client
+            // speaks, and no playlist visibility concept.
+            AccountCapabilities(
+                supportsSubscriptions: true,
+                supportsFeed: true,
+                supportsPlaylistReads: true,
+                supportsPlaylistWrites: false,
+                supportsWatchHistory: false,
+                supportsPlaylistPrivacy: false
+            )
 
         case .yatteeServer:
             // Stateless today: the client posts its own subscription list and

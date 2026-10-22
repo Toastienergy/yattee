@@ -227,9 +227,7 @@ struct InstanceLoginView: View {
         case .invidious:
             return String(localized: "login.footer.invidiousAccount \(instance.displayName)")
         case .typetype:
-            // No account concept in this client yet, so no sign-in is offered —
-            // and if one ever were, an empty footer explains nothing.
-            return ""
+            return String(localized: "login.footer.typetypeAccount \(instance.displayName)")
         case .yatteeServer:
             return String(localized: "login.footer.yatteeServerAccount \(instance.displayName)")
         case .peertube:

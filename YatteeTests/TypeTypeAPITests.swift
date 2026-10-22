@@ -352,3 +352,73 @@ struct TypeTypeListMappingTests {
         #expect(comment.publishedAt == Date(timeIntervalSince1970: 1_609_459_200))
     }
 }
+
+
+@Suite("TypeType Auth & Account Mapping")
+struct TypeTypeAccountMappingTests {
+    private func decode<T: Decodable>(_ type: T.Type, from json: String) throws -> T {
+        try HTTPClient.makeAPIDecoder().decode(T.self, from: Data(json.utf8))
+    }
+
+    @Test("Stream carries the auth header so AVPlayer's manifest fetches authenticate")
+    func streamsCarryAuthHeader() throws {
+        let response = try decode(TypeTypeStreamResponse.self, from: TypeTypeStreamMappingTests.liveJSON)
+        let streams = response.toStreams(
+            instanceURL: typeTypeBaseURL,
+            videoID: "live1234567",
+            httpHeaders: ["Authorization": "Bearer token-123"]
+        )
+
+        let stream = try #require(streams.first)
+        #expect(stream.httpHeaders?["Authorization"] == "Bearer token-123")
+    }
+
+    @Test("Subscriptions map to channels addressed by their channel URL")
+    func subscriptionsMap() throws {
+        let items = try decode([TypeTypeSubscriptionItem].self, from: """
+        [
+            {
+                "channelUrl": "https://www.youtube.com/channel/UCsub",
+                "name": "Subscribed Channel",
+                "avatarUrl": "https://tt.example.com/a.jpg",
+                "subscribedAt": 1609459200000
+            }
+        ]
+        """)
+
+        let channel = try #require(items.first?.toChannel())
+        #expect(channel.id.channelID == "https://www.youtube.com/channel/UCsub")
+        #expect(channel.name == "Subscribed Channel")
+        #expect(channel.thumbnailURL?.absoluteString == "https://tt.example.com/a.jpg")
+    }
+
+    @Test("Saved playlists map to playlists keyed by their public playlist ID")
+    func savedPlaylistsMap() throws {
+        let items = try decode([TypeTypeSavedPlaylistItem].self, from: """
+        [
+            {
+                "id": "saved-1",
+                "publicPlaylistId": "PLsaved",
+                "url": "https://www.youtube.com/playlist?list=PLsaved",
+                "title": "Saved List",
+                "thumbnailUrl": "https://i.ytimg.com/vi/x/hqdefault.jpg",
+                "uploaderName": "Owner",
+                "streamCount": 12,
+                "playlistType": "playlist",
+                "savedAt": 1609459200000
+            }
+        ]
+        """)
+
+        let playlist = try #require(items.first?.toPlaylist())
+        #expect(playlist.id.playlistID == "PLsaved")
+        #expect(playlist.title == "Saved List")
+        #expect(playlist.videoCount == 12)
+    }
+
+    @Test("Session response carries the access token")
+    func sessionResponseParses() throws {
+        let session = try decode(TypeTypeSessionResponse.self, from: #"{"accessToken": "tok-abc"}"#)
+        #expect(session.accessToken == "tok-abc")
+    }
+}

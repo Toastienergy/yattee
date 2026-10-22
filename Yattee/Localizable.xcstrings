@@ -6339,6 +6339,17 @@
         }
       }
     },
+    "login.footer.typetypeAccount %@" : {
+      "comment" : "Login footer for TypeType accounts, %@ is the instance name",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sign in to your TypeType account on %@"
+          }
+        }
+      }
+    },
     "login.footer.yatteeServerAccount %@" : {
       "localizations" : {
         "en" : {

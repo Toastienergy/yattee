@@ -24,19 +24,32 @@ actor ContentService: ContentServiceProtocol {
     private let defaultTypeTypeAPI: TypeTypeAPI
     private let defaultYatteeServerAPI: YatteeServerAPI
 
+    /// TypeType access tokens: its API answers extraction and playback with
+    /// 401 unless the caller is signed in, so the per-instance API clients
+    /// authenticate with the stored token, not just the account endpoints.
+    private let typeTypeCredentialsManager: TypeTypeCredentialsManager?
+
+    /// Feed pagination cursors, keyed by `"<instance id>|<page>"`.
+    private var typeTypeFeedCursors: [String: String] = [:]
+
     /// Credentials manager for fetching basic auth headers on demand.
     private let basicAuthCredentialsManager: BasicAuthCredentialsManager?
 
-    init(httpClient: HTTPClient, basicAuthCredentialsManager: BasicAuthCredentialsManager? = nil) {
+    init(
+        httpClient: HTTPClient,
+        basicAuthCredentialsManager: BasicAuthCredentialsManager? = nil,
+        typeTypeCredentialsManager: TypeTypeCredentialsManager? = nil
+    ) {
         // Legacy init - create factory internally
         self.httpClientFactory = HTTPClientFactory()
         self.defaultHTTPClient = httpClient
         self.defaultInvidiousAPI = InvidiousAPI(httpClient: httpClient)
         self.defaultPipedAPI = PipedAPI(httpClient: httpClient)
         self.defaultPeerTubeAPI = PeerTubeAPI(httpClient: httpClient)
-        self.defaultTypeTypeAPI = TypeTypeAPI(httpClient: httpClient)
+        self.defaultTypeTypeAPI = TypeTypeAPI(httpClient: httpClient, credentialsManager: typeTypeCredentialsManager)
         self.defaultYatteeServerAPI = YatteeServerAPI(httpClient: httpClient)
         self.basicAuthCredentialsManager = basicAuthCredentialsManager
+        self.typeTypeCredentialsManager = typeTypeCredentialsManager
     }
 
     // MARK: - Routing
@@ -72,13 +85,13 @@ actor ContentService: ContentServiceProtocol {
     /// Returns a TypeTypeAPI configured for the instance's SSL and auth requirements.
     private func typetypeAPI(for instance: Instance) async -> TypeTypeAPI {
         if let authClient = await httpClientWithBasicAuth(for: instance) {
-            return TypeTypeAPI(httpClient: authClient)
+            return TypeTypeAPI(httpClient: authClient, credentialsManager: typeTypeCredentialsManager)
         }
         if !instance.allowInvalidCertificates {
             return defaultTypeTypeAPI
         }
         let insecureClient = httpClientFactory.createClient(for: instance)
-        return TypeTypeAPI(httpClient: insecureClient)
+        return TypeTypeAPI(httpClient: insecureClient, credentialsManager: typeTypeCredentialsManager)
     }
 
     /// Returns a YatteeServerAPI configured for the instance's SSL and auth requirements.
@@ -154,6 +167,13 @@ actor ContentService: ContentServiceProtocol {
                 instance: instance,
                 authToken: credential
             )
+        case .typetype:
+            let response = try await typetypeAPI(for: instance).feed(
+                instance: instance,
+                credential: credential,
+                limit: 50
+            )
+            return response.videos.map { $0.toVideo() }
         default:
             throw APIError.notSupported
         }
@@ -179,6 +199,23 @@ actor ContentService: ContentServiceProtocol {
                 authToken: credential
             )
             return FeedPage(videos: videos, hasMore: false)
+        case .typetype:
+            // TypeType paginates with opaque cursors while this interface
+            // pages by number — the cursor for page N+1 is stashed when
+            // page N comes back, keyed by instance and page.
+            let cacheKey = "\(instance.id.uuidString)|\(page)"
+            let response = try await typetypeAPI(for: instance).feed(
+                instance: instance,
+                credential: credential,
+                cursor: typeTypeFeedCursors[cacheKey]
+            )
+            if let next = response.nextpage {
+                typeTypeFeedCursors["\(instance.id.uuidString)|\(page + 1)"] = next
+            }
+            return FeedPage(
+                videos: response.videos.map { $0.toVideo() },
+                hasMore: response.nextpage != nil
+            )
         default:
             throw APIError.notSupported
         }
@@ -196,6 +233,12 @@ actor ContentService: ContentServiceProtocol {
             let subs = try await pipedAPI(for: instance).subscriptions(
                 instance: instance,
                 authToken: credential
+            )
+            return subs.map { $0.toChannel() }
+        case .typetype:
+            let subs = try await typetypeAPI(for: instance).subscriptions(
+                instance: instance,
+                credential: credential
             )
             return subs.map { $0.toChannel() }
         default:
@@ -260,6 +303,14 @@ actor ContentService: ContentServiceProtocol {
             return try await invidiousAPI(for: instance).userPlaylists(instance: instance, sid: credential)
         case .piped:
             return try await pipedAPI(for: instance).userPlaylists(instance: instance, authToken: credential)
+        case .typetype:
+            // TypeType libraries hold saved public playlists, which map onto
+            // Yattee's user playlists one to one.
+            let saved = try await typetypeAPI(for: instance).savedPlaylists(
+                instance: instance,
+                credential: credential
+            )
+            return saved.map { $0.toPlaylist() }
         default:
             throw APIError.notSupported
         }
@@ -561,6 +612,12 @@ actor ContentService: ContentServiceProtocol {
             // Piped's login goes through the HTTPClient, so the per-instance
             // client already carries the proxy header in its default headers.
             return try await pipedAPI(for: instance).login(
+                username: username,
+                password: password,
+                instance: instance
+            )
+        case .typetype:
+            return try await typetypeAPI(for: instance).login(
                 username: username,
                 password: password,
                 instance: instance

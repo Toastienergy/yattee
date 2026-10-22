@@ -28,8 +28,10 @@ protocol SubscriptionProviderFactory {
 struct DefaultSubscriptionProviderFactory: SubscriptionProviderFactory {
     let invidiousAPI: InvidiousAPI
     let pipedAPI: PipedAPI
+    let typeTypeAPI: TypeTypeAPI
     let invidiousCredentialsManager: InvidiousCredentialsManager
     let pipedCredentialsManager: PipedCredentialsManager
+    let typeTypeCredentialsManager: TypeTypeCredentialsManager
     let settingsManager: SettingsManager
 
     func provider(
@@ -53,6 +55,13 @@ struct DefaultSubscriptionProviderFactory: SubscriptionProviderFactory {
                 credentialsManager: pipedCredentialsManager,
                 accountsManager: accountsManager,
                 settingsManager: settingsManager
+            )
+        case .typetype:
+            return TypeTypeSubscriptionProvider(
+                account: account,
+                typeTypeAPI: typeTypeAPI,
+                credentialsManager: typeTypeCredentialsManager,
+                accountsManager: accountsManager
             )
         default:
             return nil

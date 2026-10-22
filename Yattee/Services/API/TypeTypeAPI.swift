@@ -24,6 +24,11 @@
 actor TypeTypeAPI: InstanceAPI {
     private let httpClient: HTTPClient
 
+    /// Where request authentication comes from. TypeType answers extraction and
+    /// playback with 401 unless the caller is signed in, so every fetch carries
+    /// the bearer token when one is stored.
+    private let credentialsManager: TypeTypeCredentialsManager?
+
     /// Search pagination tokens, keyed by `"<query>|<page>"`.
     ///
     /// TypeType paginates with opaque `nextpage` tokens while Yattee's search
@@ -32,8 +37,166 @@ actor TypeTypeAPI: InstanceAPI {
     /// page number under the same query.
     private var searchNextPages: [String: String] = [:]
 
-    init(httpClient: HTTPClient) {
+    init(httpClient: HTTPClient, credentialsManager: TypeTypeCredentialsManager? = nil) {
         self.httpClient = httpClient
+        self.credentialsManager = credentialsManager
+    }
+
+    // MARK: - Authentication
+
+    /// The bearer header for a request, or nil when nothing is signed in.
+    private func authHeaders(for instance: Instance) async -> [String: String]? {
+        guard let token = await credentialsManager?.credential(for: instance) else { return nil }
+        return ["Authorization": "Bearer \(token)"]
+    }
+
+    /// Fetches with the bearer token attached. A rejected token (401) triggers
+    /// one session refresh — the refresh cookie is kept by the shared URL
+    /// session — and one retry before the failure stands.
+    private func fetchAuthed<T: Decodable & Sendable>(
+        _ endpoint: Endpoint,
+        instance: Instance,
+        token: String? = nil
+    ) async throws -> T {
+        let headers = token.map { ["Authorization": "Bearer \($0)"] } ?? await authHeaders(for: instance)
+        do {
+            return try await httpClient.fetch(endpoint, baseURL: instance.url, customHeaders: headers)
+        } catch APIError.unauthorized {
+            guard let fresh = await refreshSession(instance: instance) else {
+                throw APIError.unauthorized
+            }
+            return try await httpClient.fetch(
+                endpoint,
+                baseURL: instance.url,
+                customHeaders: ["Authorization": "Bearer \(fresh)"]
+            )
+        }
+    }
+
+    /// Signs in to a TypeType instance and returns the access token.
+    func login(username: String, password: String, instance: Instance) async throws -> String {
+        struct LoginRequest: Encodable, Sendable {
+            let identifier: String
+            let password: String
+        }
+        let endpoint = GenericEndpoint.post(
+            "/api/auth/login",
+            body: LoginRequest(identifier: username, password: password)
+        )
+        do {
+            let response: TypeTypeSessionResponse = try await httpClient.fetch(endpoint, baseURL: instance.url)
+            return response.accessToken
+        } catch let error as APIError {
+            if case .httpError(let statusCode, _) = error, statusCode == 401 || statusCode == 403 {
+                throw APIError.unauthorized
+            }
+            throw error
+        }
+    }
+
+    /// Exchanges the refresh cookie (kept by the shared URL session since the
+    /// login response) for a new access token and stores it. Returns nil when
+    /// the session has expired and a fresh sign-in is needed.
+    @discardableResult
+    func refreshSession(instance: Instance) async -> String? {
+        let endpoint = GenericEndpoint.post("/api/auth/refresh")
+        do {
+            let response: TypeTypeSessionResponse = try await httpClient.fetch(endpoint, baseURL: instance.url)
+            await credentialsManager?.setCredential(response.accessToken, for: instance)
+            return response.accessToken
+        } catch {
+            return nil
+        }
+    }
+
+    // MARK: - Account Features
+
+    /// One page of the account's subscription feed.
+    func feed(
+        instance: Instance,
+        credential: String,
+        limit: Int = 30,
+        cursor: String? = nil
+    ) async throws -> TypeTypeFeedResponse {
+        var params = [
+            "service": String(TypeTypeService.youtube),
+            "limit": String(limit)
+        ]
+        if let cursor {
+            params["cursor"] = cursor
+        }
+        let endpoint = GenericEndpoint.get("/api/subscriptions/feed", query: params)
+        return try await fetchAuthed(endpoint, instance: instance, token: credential)
+    }
+
+    /// The account's subscriptions.
+    func subscriptions(instance: Instance, credential: String) async throws -> [TypeTypeSubscriptionItem] {
+        let endpoint = GenericEndpoint.get("/api/subscriptions")
+        return try await fetchAuthed(endpoint, instance: instance, token: credential)
+    }
+
+    /// Subscribes to a channel. TypeType wants the channel's display data
+    /// alongside its URL.
+    func subscribe(
+        channelURL: String,
+        name: String,
+        avatarURL: String,
+        instance: Instance,
+        credential: String
+    ) async throws {
+        struct SubscriptionCreateRequest: Encodable, Sendable {
+            let channelUrl: String
+            let name: String
+            let avatarUrl: String
+        }
+        let endpoint = GenericEndpoint.post(
+            "/api/subscriptions",
+            body: SubscriptionCreateRequest(
+                channelUrl: channelURL,
+                name: name,
+                avatarUrl: avatarURL
+            )
+        )
+        let _: TypeTypeSubscriptionItem = try await fetchAuthed(endpoint, instance: instance, token: credential)
+    }
+
+    /// Unsubscribes from a channel (addressed by its channel URL).
+    func unsubscribe(channelURL: String, instance: Instance, credential: String) async throws {
+        let endpoint = GenericEndpoint(
+            path: "/api/subscriptions",
+            method: .delete,
+            queryItems: [URLQueryItem(name: "url", value: channelURL)]
+        )
+        // Answers 204 with no body — read and discard.
+        _ = try await fetchAuthedData(endpoint, instance: instance, token: credential)
+    }
+
+    /// Public playlists the account has saved to its library.
+    func savedPlaylists(instance: Instance, credential: String) async throws -> [TypeTypeSavedPlaylistItem] {
+        let endpoint = GenericEndpoint.get("/api/saved-playlists")
+        return try await fetchAuthed(endpoint, instance: instance, token: credential)
+    }
+
+    /// Like ``fetchAuthed(endpoint:instance:token:)`` for write operations
+    /// whose success has no response body to decode.
+    private func fetchAuthedData(
+        _ endpoint: Endpoint,
+        instance: Instance,
+        token: String? = nil
+    ) async throws -> Data {
+        let headers = token.map { ["Authorization": "Bearer \($0)"] } ?? await authHeaders(for: instance)
+        do {
+            return try await httpClient.fetchData(endpoint, baseURL: instance.url, customHeaders: headers)
+        } catch APIError.unauthorized {
+            guard let fresh = await refreshSession(instance: instance) else {
+                throw APIError.unauthorized
+            }
+            return try await httpClient.fetchData(
+                endpoint,
+                baseURL: instance.url,
+                customHeaders: ["Authorization": "Bearer \(fresh)"]
+            )
+        }
     }
 
     // MARK: - InstanceAPI
@@ -49,7 +212,7 @@ actor TypeTypeAPI: InstanceAPI {
                 "service": String(TypeTypeService.youtube),
                 "limit": "30"
             ])
-            let response: TypeTypeHomeResponse = try await httpClient.fetch(endpoint, baseURL: instance.url)
+            let response: TypeTypeHomeResponse = try await fetchAuthed(endpoint, instance: instance)
             return response.items.map { $0.toVideo() }
         } catch is CancellationError {
             throw CancellationError()
@@ -75,7 +238,7 @@ actor TypeTypeAPI: InstanceAPI {
         }
 
         let endpoint = GenericEndpoint.get("/api/search", query: params)
-        let response: TypeTypeSearchResponse = try await httpClient.fetch(endpoint, baseURL: instance.url)
+        let response: TypeTypeSearchResponse = try await fetchAuthed(endpoint, instance: instance)
 
         if let nextpage = response.nextpage {
             searchNextPages["\(query)|\(page + 1)"] = nextpage
@@ -107,7 +270,7 @@ actor TypeTypeAPI: InstanceAPI {
             "query": query,
             "service": String(TypeTypeService.youtube)
         ])
-        let response: [String] = try await httpClient.fetch(endpoint, baseURL: instance.url)
+        let response: [String] = try await fetchAuthed(endpoint, instance: instance)
         return response
     }
 
@@ -118,7 +281,7 @@ actor TypeTypeAPI: InstanceAPI {
 
     func channel(id: String, instance: Instance) async throws -> Channel {
         let endpoint = GenericEndpoint.get("/api/channel", query: ["url": TypeTypeURLs.channel(id)])
-        let response: TypeTypeChannelResponse = try await httpClient.fetch(endpoint, baseURL: instance.url)
+        let response: TypeTypeChannelResponse = try await fetchAuthed(endpoint, instance: instance)
         return response.toChannel(id: id)
     }
 
@@ -128,7 +291,7 @@ actor TypeTypeAPI: InstanceAPI {
             params["nextpage"] = continuation
         }
         let endpoint = GenericEndpoint.get("/api/channel", query: params)
-        let response: TypeTypeChannelResponse = try await httpClient.fetch(endpoint, baseURL: instance.url)
+        let response: TypeTypeChannelResponse = try await fetchAuthed(endpoint, instance: instance)
         return ChannelVideosPage(
             videos: response.videos.map { $0.toVideo() },
             continuation: response.nextpage
@@ -141,7 +304,7 @@ actor TypeTypeAPI: InstanceAPI {
             params["nextpage"] = continuation
         }
         let endpoint = GenericEndpoint.get("/api/channel/playlists", query: params)
-        let response: TypeTypeChannelPlaylistsResponse = try await httpClient.fetch(endpoint, baseURL: instance.url)
+        let response: TypeTypeChannelPlaylistsResponse = try await fetchAuthed(endpoint, instance: instance)
         return ChannelPlaylistsPage(
             playlists: response.playlists.map { $0.toPlaylist() },
             continuation: response.nextpage
@@ -151,7 +314,7 @@ actor TypeTypeAPI: InstanceAPI {
     func playlist(id: String, instance: Instance) async throws -> Playlist {
         var params = ["url": TypeTypeURLs.playlist(id)]
         let endpoint = GenericEndpoint.get("/api/playlist", query: params)
-        let firstResponse: TypeTypePlaylistResponse = try await httpClient.fetch(endpoint, baseURL: instance.url)
+        let firstResponse: TypeTypePlaylistResponse = try await fetchAuthed(endpoint, instance: instance)
 
         var allVideos = firstResponse.videos
         var nextpage = firstResponse.nextpage
@@ -161,7 +324,7 @@ actor TypeTypeAPI: InstanceAPI {
         while let token = nextpage, page < maxPages {
             params["nextpage"] = token
             let nextEndpoint = GenericEndpoint.get("/api/playlist", query: params)
-            let nextResponse: TypeTypePlaylistResponse = try await httpClient.fetch(nextEndpoint, baseURL: instance.url)
+            let nextResponse: TypeTypePlaylistResponse = try await fetchAuthed(nextEndpoint, instance: instance)
             if nextResponse.videos.isEmpty { break }
             allVideos.append(contentsOf: nextResponse.videos)
             nextpage = nextResponse.nextpage
@@ -185,7 +348,7 @@ actor TypeTypeAPI: InstanceAPI {
             params["nextpage"] = continuation
         }
         let endpoint = GenericEndpoint.get("/api/comments", query: params)
-        let response: TypeTypeCommentsResponse = try await httpClient.fetch(endpoint, baseURL: instance.url)
+        let response: TypeTypeCommentsResponse = try await fetchAuthed(endpoint, instance: instance)
 
         if response.commentsDisabled == true {
             throw APIError.commentsDisabled
@@ -199,7 +362,7 @@ actor TypeTypeAPI: InstanceAPI {
 
     func captions(videoID: String, instance: Instance) async throws -> [Caption] {
         let endpoint = GenericEndpoint.get("/api/subtitles/youtube/\(videoID)")
-        let response: [TypeTypeSubtitleItem] = try await httpClient.fetch(endpoint, baseURL: instance.url)
+        let response: [TypeTypeSubtitleItem] = try await fetchAuthed(endpoint, instance: instance)
         return response.compactMap { $0.toCaption() }
     }
 
@@ -210,12 +373,12 @@ actor TypeTypeAPI: InstanceAPI {
         let endpoint = GenericEndpoint.get("/api/streams/youtube/sabr", query: [
             "url": TypeTypeURLs.watch(videoID)
         ])
-        return try await httpClient.fetch(endpoint, baseURL: instance.url)
+        return try await fetchAuthed(endpoint, instance: instance)
     }
 
     func streams(videoID: String, instance: Instance) async throws -> [Stream] {
         let response = try await streamResponse(videoID: videoID, instance: instance)
-        return response.toStreams(instanceURL: instance.url, videoID: videoID)
+        return response.toStreams(instanceURL: instance.url, videoID: videoID, httpHeaders: await authHeaders(for: instance))
     }
 
     /// Video details, streams, and captions from a single fetch — the stream
@@ -227,7 +390,7 @@ actor TypeTypeAPI: InstanceAPI {
         let response = try await streamResponse(videoID: id, instance: instance)
         return (
             response.toVideo(instanceURL: instance.url, videoID: id),
-            response.toStreams(instanceURL: instance.url, videoID: id),
+            response.toStreams(instanceURL: instance.url, videoID: id, httpHeaders: await authHeaders(for: instance)),
             (response.subtitles ?? []).compactMap { $0.toCaption() },
             []
         )
@@ -351,7 +514,7 @@ struct TypeTypeStreamResponse: Decodable, Sendable {
         )
     }
 
-    nonisolated func toStreams(instanceURL: URL, videoID: String) -> [Stream] {
+    nonisolated func toStreams(instanceURL: URL, videoID: String, httpHeaders: [String: String]? = nil) -> [Stream] {
         // Live content carries a plain HLS manifest and no SABR sources.
         if isLive == true || hasLiveManifest == true {
             if let hls = resolveURL(hlsUrl, instanceURL: instanceURL) {
@@ -359,7 +522,8 @@ struct TypeTypeStreamResponse: Decodable, Sendable {
                     url: hls,
                     format: "hls",
                     isLive: true,
-                    mimeType: "application/vnd.apple.mpegurl"
+                    mimeType: "application/vnd.apple.mpegurl",
+                    httpHeaders: httpHeaders
                 )]
             }
         }
@@ -393,6 +557,7 @@ struct TypeTypeStreamResponse: Decodable, Sendable {
                     bitrate: best.bitrate,
                     isLive: false,
                     mimeType: "application/vnd.apple.mpegurl",
+                    httpHeaders: httpHeaders,
                     fps: best.fps
                 ))
             }
@@ -417,6 +582,7 @@ struct TypeTypeStreamResponse: Decodable, Sendable {
                     fileSize: item.contentLength,
                     isLive: false,
                     mimeType: "application/vnd.apple.mpegurl",
+                    httpHeaders: httpHeaders,
                     fps: item.fps
                 ))
             }
@@ -433,7 +599,8 @@ struct TypeTypeStreamResponse: Decodable, Sendable {
                 format: "hls",
                 isAudioOnly: true,
                 isLive: false,
-                mimeType: "application/vnd.apple.mpegurl"
+                mimeType: "application/vnd.apple.mpegurl",
+                httpHeaders: httpHeaders
             ))
         }
 
@@ -704,6 +871,58 @@ struct TypeTypeCommentItem: Decodable, Sendable {
             hasCreatorHeart: isHeartedByUploader ?? false,
             replyCount: replyCount ?? 0,
             repliesContinuation: repliesPage
+        )
+    }
+}
+
+
+// MARK: - Auth & Account Models
+
+struct TypeTypeSessionResponse: Decodable, Sendable {
+    let accessToken: String
+}
+
+struct TypeTypeFeedResponse: Decodable, Sendable {
+    let videos: [TypeTypeVideoItem]
+    let nextpage: String?
+    let generation: Int64?
+    let generatedAt: Int64?
+    let refreshing: Bool?
+}
+
+struct TypeTypeSubscriptionItem: Decodable, Sendable {
+    let channelUrl: String
+    let name: String?
+    let avatarUrl: String?
+    let subscribedAt: Int64?
+
+    nonisolated func toChannel() -> Channel {
+        Channel(
+            id: .global(channelUrl),
+            name: name ?? "",
+            thumbnailURL: avatarUrl.flatMap { URL(string: $0) }
+        )
+    }
+}
+
+struct TypeTypeSavedPlaylistItem: Decodable, Sendable {
+    let id: String?
+    let publicPlaylistId: String?
+    let url: String?
+    let title: String?
+    let thumbnailUrl: String?
+    let uploaderName: String?
+    let streamCount: Int64?
+    let playlistType: String?
+    let savedAt: Int64?
+
+    nonisolated func toPlaylist() -> Playlist {
+        Playlist(
+            id: .global(publicPlaylistId ?? url ?? id ?? ""),
+            title: title ?? "",
+            author: uploaderName.map { Author(id: "", name: $0) },
+            videoCount: TypeTypeSentinel.count(streamCount) ?? 0,
+            thumbnailURL: thumbnailUrl.flatMap { URL(string: $0) }
         )
     }
 }
